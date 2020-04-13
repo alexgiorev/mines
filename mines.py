@@ -61,11 +61,11 @@ class Board:
         a pixel coordinate that is within the top-left box. (nrows, ncols) are the
         dimensions of the box. (N) is the number of mines remaining."""
         self._matr = [[self.HIDDEN for col in range(ncols)] for row in range(nrows)]
-        # (self._to_uncover) contains the rowcols which are still to be
+        # (self._unknowns) contains the rowcols which are still to be
         # uncovered. This is for efficiency when we sync with an image, to query
         # only at coordinates of boxes whose value is still unknown. For an
-        # covered box, the possible values are Board.HIDDEN and Board.SAFE
-        self._to_uncover = set(itertools.product(range(nrows), range(ncols)))
+        # unknown box, the possible values are Board.HIDDEN and Board.SAFE
+        self._unknowns = set(itertools.product(range(nrows), range(ncols)))
         # rowcols of boxes which contain digits
         self._digit_rowcols = set()
         # rowcols of boxes which contain mines
@@ -126,8 +126,8 @@ class Board:
         self._img = img
         self._pix = img.load()
         changed = [] # the list of changed rowcols
-        to_uncover = list(self._to_uncover)
-        for rowcol in to_uncover:
+        unknowns = list(self._unknowns)
+        for rowcol in unknowns:
             value = self._value_at(rowcol)
             if value is self.HIT:
                 self.hit_mine = True
@@ -187,7 +187,7 @@ class Board:
 
     @property
     def hidden_rowcols(self):
-        return (rowcol for rowcol in self._to_uncover
+        return (rowcol for rowcol in self._unknowns
                 if self[rowcol] is not self.SAFE)
 
     @property
@@ -195,8 +195,8 @@ class Board:
         return iter(self._mine_rowcols)
 
     @property
-    def covered_rowcols(self):
-        return iter(self._to_uncover)
+    def unknown_rowcols(self):
+        return iter(self._unknowns)
 
     @property
     def digit_rowcols(self):
@@ -209,11 +209,11 @@ class Board:
 
     def reveal(self, rowcol, value):
         """The box at (rowcol) is known to be empty or to contain a digit."""
-        self._check_covered(rowcol)
+        self._check_unknown(rowcol)
         if value is not Board.EMPTY and type(value) is not int:
             raise ValueError(f'Bad reveal value: {value}')
         self[rowcol] = value
-        self._to_uncover.remove(rowcol)
+        self._unknowns.remove(rowcol)
         if type(value) is int:
             self._digit_rowcols.add(rowcol)
         
@@ -222,20 +222,23 @@ class Board:
         # TODO: do this check better
         if self[rowcol] is self.MINE:
             return
-        self._check_covered(rowcol)
+        self._check_unknown(rowcol)
         if self.N == 0:
             raise ValueError(f'Cannot mark at {rowcol}; remaining mines count is zero.')
-        self._to_uncover.remove(rowcol)
+        self._unknowns.remove(rowcol)
         self[rowcol] = self.MINE
         self.N -= 1
 
     def mark_safe(self, rowcol):
-        self._check_covered(rowcol)
+        self._check_unknown(rowcol)
         self[rowcol] = Board.SAFE
 
-    def _check_covered(self, rowcol):
-        if self[rowcol] not in (self.HIDDEN, self.SAFE):
-            raise ValueError(f'Rowcol {rowcol} must be covered: {self[rowcol]}.')
+    def is_unknown(self, rowcol):
+        return (self[rowcol] is self.HIDDEN or self[rowcol] is self.SAFE)
+    
+    def _check_unknown(self, rowcol):
+        if not self.is_unknown(rowcol):
+            raise ValueError(f'Rowcol {rowcol} must be unknown: {self[rowcol]}.')
 
 class Engine:
     """
@@ -326,6 +329,7 @@ class Main:
         self.engine_factory = engine_factory
         
     def reveal(self, rowcol):
+        print(f'Revealing {rowcol}')
         self.moveTo(rowcol)
         pyautogui.click()
         
@@ -387,8 +391,9 @@ class Main:
             pyautogui.click()
         pyautogui.keyUp('ctrl')
         for rowcol in safe:
-            self.reveal(rowcol)
-        self.sync_board()
+            if self.board.is_unknown(rowcol):
+                self.reveal(rowcol)
+                self.sync_board()
 
     def msg(self, text):
         os.system(f"notify-send '{text}'")
@@ -402,6 +407,7 @@ class Main:
         self.board = Board(img, topleft, rows, cols, mines)
         self.rowcol = None # the rowcol at which the cursor is at
         self.engine = self.engine_factory(self.board)
+        self.revealed = set() # for debugging
         self.reveal_random()
         
         # main loop
@@ -413,7 +419,7 @@ class Main:
                 self.msg('Engine not good enough.')
                 break
             if self.board.N == 0:
-                self.perform(marked, self.board.covered_rowcols)
+                self.perform(marked, self.board.unknown_rowcols)
                 break
             else:
                 self.perform(marked, safe)
