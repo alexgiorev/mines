@@ -407,16 +407,13 @@ class Main:
         # main loop
         while True:
             if self.board.hit_mine:
-                print('Hit mine.')
                 break
             marked, safe = self.engine.run()
             if not (marked or safe):
                 self.msg('Engine not good enough.')
-                print('Not good enough.')
                 break
             if self.board.N == 0:
                 self.perform(marked, self.board.covered_rowcols)
-                print('final performance')
                 break
             else:
                 self.perform(marked, safe)
