@@ -6,6 +6,7 @@ import math
 import sys
 import getopt
 import time
+import os
 
 from PIL import Image
 from collections import namedtuple, deque, defaultdict
@@ -13,12 +14,25 @@ from types import SimpleNamespace
 
 class Board:
     Boundary = namedtuple('Boundary', 'miny maxy minx maxx')
-    
-    EMPTY = 'EMPTY' # boxes which don't contain numbers or mines
-    HIDDEN = 'HIDDEN' # rowcols whose contents are unknown
-    MINE = 'MINE' # to be used at rowcols which we know are mines
+
+    ########################################
+    # Apart form the integers in range(1, 9), boxes can contain one of the
+    # values below.
+
+    # Boxes which don't contain neither numbers nor mines
+    EMPTY = 'EMPTY' 
+    # When we know the box does not contain a mine, but not what value it
+    # contains.
+    SAFE = 'SAFE'
+    # When we have no knowledge about the box contents.
+    HIDDEN = 'HIDDEN'
+    # The box is known to contain a mine, but is not opened.
+    MINE = 'MINE'
+    # The box contained a mine and was opened.
     HIT = 'HIT'
-    # colors
+    
+    ########################################
+    # Colors
     HIDDEN_COLOR = (186, 189, 182)
     # When the cursor is ontop of a hidden box, the box gets highlighted and
     # changes color. This is why CURSOR_COLOR is needed.
@@ -47,14 +61,20 @@ class Board:
         a pixel coordinate that is within the top-left box. (nrows, ncols) are the
         dimensions of the box. (N) is the number of mines remaining."""
         self._matr = [[self.HIDDEN for col in range(ncols)] for row in range(nrows)]
-        self._hidden = set(itertools.product(range(nrows), range(ncols)))
-        self._digits = set()
-        self._mines = set()
+        # (self._to_uncover) contains the rowcols which are still to be
+        # uncovered. This is for efficiency when we sync with an image, to query
+        # only at coordinates of boxes whose value is still unknown. For an
+        # covered box, the possible values are Board.HIDDEN and Board.SAFE
+        self._to_uncover = set(itertools.product(range(nrows), range(ncols)))
+        # rowcols of boxes which contain digits
+        self._digit_rowcols = set()
+        # rowcols of boxes which contain mines
+        self._mine_rowcols = set()
         self._init_boxes(img, topleft, nrows, ncols)
         self.nrows = nrows
         self.ncols = ncols
         self.N = N
-        self.hit = False # Whether a mine is hit
+        self.hit_mine = False # Whether a mine has been hit upon
 
     def _init_boxes(self, img, topleft, nrows, ncols):
         """This function creates (self._rowcol_boundary), which is a mapping from a
@@ -97,38 +117,31 @@ class Board:
         return self._matr[row][col]
 
     def __setitem__(self, rowcol, value):
-        current_box = self[rowcol]
-        if current_box is not Board.HIDDEN:
-            return # already revealed
         row, col = rowcol
         self._matr[row][col] = value
-        if type(value) is int:
-            self._digits.add(rowcol)
-        elif value is Board.MINE:
-            self._mines.add(rowcol)
-
-    def refresh(self, img):
+            
+    def update(self, img):
         """Updates boxes based on (img). Returns a list of the rowcols which
         have changed."""
         self._img = img
         self._pix = img.load()
-        # copy (self._hidden) so that we can modify it while iterating.
-        hidden = list(self._hidden)
         changed = [] # the list of changed rowcols
-        for rowcol in hidden:
+        to_uncover = list(self._to_uncover)
+        for rowcol in to_uncover:
             value = self._value_at(rowcol)
             if value is self.HIT:
-                self.hit = True
+                self.hit_mine = True
                 return None
             if value is not self.HIDDEN:
-                self[rowcol] = value
+                self.reveal(rowcol, value)
                 changed.append(rowcol)
         return changed
 
     def _value_at(self, rowcol):
-        """A helper function. Returns the value of the box whose coordinates
-        within the board are (rowcol). Uses information from the image to do
-        this. Assumes (self._img) and (self._pix) are set properly."""
+        """A helper function. For the box at (rowcol), we get the value based on
+        the image (self._img). ValueError is raised if the value cannot be
+        extracted from the image. The possible return values are an int or one
+        of {Board.HIT, Board.EMPTY, Board.HIDDEN}"""
         b = self._rowcol_boundary[rowcol]
         pixels = itertools.product(range(b.minx, b.maxx+1),
                                    range(b.miny, b.maxy+1))
@@ -152,10 +165,6 @@ class Board:
                 return value
         raise ValueError(f'Could not get the value at position {rowcol}')
 
-    def reveal(self, rowcol):
-        """Presses the box at (rowcol) and updates the state of the board."""
-        raise NotImplementedError
-
     def neighbors(self, rowcol):
         row, col = rowcol
         candidates = ((row-1, col-1), (row, col-1), (row+1, col-1),
@@ -165,116 +174,154 @@ class Board:
                 if 0 <= rowcol[0] < self.nrows and 0 <= rowcol[1] < self.ncols)
 
     def digit_neighbors(self, rowcol):
-        return frozenset(neigh for neigh in self.neighbors(rowcol)
-                         if type(self[neigh]) is int)
+        return (neigh for neigh in self.neighbors(rowcol)
+                if type(self[neigh]) is int)
 
     def mine_neighbors(self, rowcol):
-        return frozenset(neigh for neigh in self.neighbors(rowcol)
-                         if self[neigh] is Board.MINE)
+        return (neigh for neigh in self.neighbors(rowcol)
+                if self[neigh] is Board.MINE)
 
     def hidden_neighbors(self, rowcol):
-        return frozenset(neigh for neigh in self.neighbors(rowcol)
-                         if self[neigh] is Board.HIDDEN)
+        return (neigh for neigh in self.neighbors(rowcol)
+                if self[neigh] is Board.HIDDEN)
 
     @property
     def hidden_rowcols(self):
-        return set(self._hidden)
+        return (rowcol for rowcol in self._to_uncover
+                if self[rowcol] is not self.SAFE)
 
     @property
     def mine_rowcols(self):
-        return set(self._mines)
+        return iter(self._mine_rowcols)
+
+    @property
+    def covered_rowcols(self):
+        return iter(self._to_uncover)
 
     @property
     def digit_rowcols(self):
-        return set(self._digits)
+        return iter(self._digit_rowcols)
 
     def getxy(self, rowcol):
         """Returns a screen coordinate which is within the box at (rowcol)."""
         b = self._rowcol_boundary[rowcol]
         return random.randint(b.minx, b.maxx), random.randint(b.miny, b.maxy)
 
-    def mark(self, rowcol):
+    def reveal(self, rowcol, value):
+        """The box at (rowcol) is known to be empty or to contain a digit."""
+        self._check_covered(rowcol)
+        if value is not Board.EMPTY and type(value) is not int:
+            raise ValueError(f'Bad reveal value: {value}')
+        self[rowcol] = value
+        self._to_uncover.remove(rowcol)
+        if type(value) is int:
+            self._digit_rowcols.add(rowcol)
+        
+    def mark_mine(self, rowcol):
         """Marks (rowcol) as a mine."""
+        # TODO: do this check better
+        if self[rowcol] is self.MINE:
+            return
+        self._check_covered(rowcol)
         if self.N == 0:
-            raise ValueError(f'Cannot mark at {rowcol}; mark count is zero.')
+            raise ValueError(f'Cannot mark at {rowcol}; remaining mines count is zero.')
+        self._to_uncover.remove(rowcol)
         self[rowcol] = self.MINE
         self.N -= 1
+
+    def mark_safe(self, rowcol):
+        self._check_covered(rowcol)
+        self[rowcol] = Board.SAFE
+
+    def _check_covered(self, rowcol):
+        if self[rowcol] not in (self.HIDDEN, self.SAFE):
+            raise ValueError(f'Rowcol {rowcol} must be covered: {self[rowcol]}.')
 
 class Engine:
     """
     * Public interface.
+    An Engine is used to mark mine rowcols and to make predictions which rowcols
+    do not have mines. This information is communicated via engine.run().
+    """
 
-    An Engine makes makes predictions which boxes have mines and which
-    don't. You create it, and then .notify() it each time you modify the
-    board. You tell it which boxes you revealed, and which you marked as
-    containing mines. It uses this information and then tells you further boxes
-    to reveal, and further boxes to mark. It is important to notify the Engine
-    of all modifications made and all new information revealed."""
-
-    Group = namedtuple('Group', 'rowcols, N')
+    Group = namedtuple('Group', 'rowcols N')
+    Collection = namedtuple('Collection', 'groups full_groups empty_groups')
     
     def __init__(self, board):
         self.board = board
-        # contains the rowcols of digits which have no mines around them, so
-        # that we don't consider them.
-        self.finished = set()
+        self.collection = None
 
-    def get(self):
-        """Returns a pair (mines, no_mines) of sets. The former says which
-        rowcols the engine believes contain mines. The latter which it believes
-        to not.
+    def run(self):
+        """Marks the rowcols which the engine knows contain mines. Returns a
+        pair (marked, safe). The former is a set of the rowcols which the engine
+        marked. The latter is those it predicts do not contain mines. These can
+        be revealed safely. At that point, you can run the engine again."""
+        mines, safe = set(), set()
+        while True:
+            col = self.new_collection()
+            if not (col.full_groups or col.empty_groups):
+                break
+            for group in col.full_groups:
+                for rowcol in group.rowcols:
+                    self.board.mark_mine(rowcol)
+                    mines.add(rowcol)
+            for group in col.empty_groups:
+                for rowcol in group.rowcols:
+                    self.board.mark_safe(rowcol)
+                    safe.add(rowcol)
+        return mines, safe
 
-        TODO: when you are left with little, try different configurations and
-        see if there are contradictions. Then choose based on lack of
-        contradiction."""
-        
-        self.mines, self.no_mines = set(), set()
-        self.groups = set()
-        self.compute()
-        if not (self.mines or self.no_mines):
-            safest = min(self.groups,
-                         key=lambda group: group.N/len(group.rowcols))
-            self.no_mines.add(random.choice(tuple(safest.rowcols)))
-        return self.mines, self.no_mines
-
-    def compute(self):
-        self.groups = set()
-        self.pending = deque()
-        for digit_rowcol in self.board.digit_rowcols - self.finished:
-            rowcols = self.board.hidden_neighbors(digit_rowcol)
+    def new_collection(self):
+        """Creates a new collection based on (self.board) and stores it in
+        (self.collection). The function returns the collection for
+        convenience."""
+        pending_groups = self.pending_groups = deque()
+        collection = self.collection = self.Collection(set(), set(), set())
+        ########################################
+        # Enqueue the digit boxes' main groups
+        # TODO: this could be made more efficient by keeping track of the digit
+        # boxes which don't have hidden neighbors.
+        for digit_rowcol in self.board.digit_rowcols:
+            rowcols = frozenset(self.board.hidden_neighbors(digit_rowcol))
             if not rowcols:
-                self.finished.add(digit_rowcol)
                 continue
-            N = self.board[digit_rowcol]
-            N -= len(self.board.mine_neighbors(digit_rowcol))
-            self.pending.append(self.Group(rowcols=rowcols, N=N))
-        while self.pending:
-            group = self.pending.popleft()
-            self.groups.add(group)
-            self.process_group(group)
-    
-    def process_group(self, group):
-        if group.N == len(group.rowcols):
-            self.mines.update(group.rowcols)
-        elif group.N == 0:
-            self.no_mines.update(group.rowcols)
-        else:
-            for other_group in self.groups:
-                if other_group.rowcols < group.rowcols:
-                    self.add_complement(other_group, group)
-                elif other_group.rowcols > group.rowcols:
-                    self.add_complement(group, other_group)
+            N = self.board[digit_rowcol] - len(list(self.board.mine_neighbors(digit_rowcol)))
+            self.pending_groups.append(self.Group(rowcols, N))
+        ########################################
+        # Process pending groups
+        while pending_groups:
+            group = pending_groups.popleft()
+            if group in collection.groups:
+                # already processed
+                continue
+            ########################################
+            # Enqueue the complements
+            for other_group in collection.groups:
+                if group.rowcols < other_group.rowcols:
+                    subgroup, supergroup = group, other_group
+                elif other_group.rowcols < group.rowcols:
+                    subgroup, supergroup = other_group, group
+                else:
+                    continue
+                rowcols = supergroup.rowcols - subgroup.rowcols
+                N = supergroup.N - subgroup.N
+                pending_groups.append(self.Group(rowcols, N))
+            ########################################
+            # Add the current group
+            collection.groups.add(group)
+            if len(group.rowcols) == group.N:
+                collection.full_groups.add(group)
+            elif group.N == 0:
+                collection.empty_groups.add(group)
+        ########################################
+        return collection
+            
+    def update_collection(self, *args):
+        """TODO. Rather than creating a new collection, this function updates
+        the existing one in (self.collection). This may be more efficient."""
+        raise NotImplementedError
 
-    def add_complement(self, subgroup, group):
-        complement = self.Group(rowcols = group.rowcols - subgroup.rowcols,
-                                N = group.N - subgroup.N)
-        self.post_group(complement)
-
-    def post_group(self, group):
-        if group not in self.groups:
-            self.pending.append(group)
-        
-class Main:    
+class Main:
     def __init__(self, engine_factory):
         self.engine_factory = engine_factory
         
@@ -283,19 +330,10 @@ class Main:
         pyautogui.click()
         
     def mark(self, rowcol):
-        self.board.mark(rowcol)
         self.moveTo(rowcol)
         pyautogui.keyDown('ctrl')
         pyautogui.click()
         pyautogui.keyUp('ctrl')
-
-    def moveTo_old(self, rowcol):
-        SPEED = 750 # pixels per second
-        to_xy = self.board.getxy(rowcol)
-        from_xy = pyautogui.position()
-        distance = math.sqrt(sum([(a - b) ** 2 for a, b in zip(to_xy, from_xy)]))
-        pyautogui.moveTo(*to_xy, distance/SPEED)
-        self.rowcol = rowcol
 
     def moveTo(self, rowcol):
         to_xy = self.board.getxy(rowcol)
@@ -305,7 +343,7 @@ class Main:
     def sync_board(self):
         """Synchronizes the state of (board) to that in the game. Returns the
         rowcols which have new values."""
-        return self.board.refresh(pyautogui.screenshot())
+        return self.board.update(pyautogui.screenshot())
 
     def parse_args(self):
         optlist, args = getopt.getopt(sys.argv[1:], 'd:m:')
@@ -342,19 +380,19 @@ class Main:
             requests.remove(closest)
         return result
 
-    def perform(self, mines, no_mines):
-        requests = self.sort(mines, no_mines)
-        for request in requests:
-            type, rowcol = request
-            if type == 'mark':
-                self.mark(rowcol)
-            else:
-                if self.board[rowcol] is Board.HIDDEN:
-                    self.reveal(rowcol)
-                    self.sync_board()
-                    if self.board.hit:
-                        return
+    def perform(self, marked, safe):
+        pyautogui.keyDown('ctrl')
+        for rowcol in marked:
+            self.moveTo(rowcol)
+            pyautogui.click()
+        pyautogui.keyUp('ctrl')
+        for rowcol in safe:
+            self.reveal(rowcol)
+        self.sync_board()
 
+    def msg(self, text):
+        os.system(f"notify-send '{text}'")
+    
     def main(self):
         time.sleep(2)
         rows, cols, mines = self.parse_args()
@@ -367,13 +405,21 @@ class Main:
         self.reveal_random()
         
         # main loop
-        while not self.board.hit:
-            mines, no_mines = self.engine.get()
-            if self.board.N == len(mines):
-                self.perform(mines=set(), no_mines=self.board.hidden_rowcols)
+        while True:
+            if self.board.hit_mine:
+                print('Hit mine.')
+                break
+            marked, safe = self.engine.run()
+            if not (marked or safe):
+                self.msg('Engine not good enough.')
+                print('Not good enough.')
+                break
+            if self.board.N == 0:
+                self.perform(marked, self.board.covered_rowcols)
+                print('final performance')
                 break
             else:
-                self.perform(mines, no_mines)
+                self.perform(marked, safe)
 
 if __name__ == '__main__':
     m = Main(Engine)
