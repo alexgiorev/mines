@@ -10,7 +10,7 @@ import os
 
 from PIL import Image
 from collections import namedtuple, deque, defaultdict
-from types import SimpleNamespace
+from fractions import Fraction
 
 class Board:
     Boundary = namedtuple('Boundary', 'miny maxy minx maxx')
@@ -21,8 +21,8 @@ class Board:
 
     # Boxes which don't contain neither numbers nor mines
     EMPTY = 'EMPTY' 
-    # When we know the box does not contain a mine, but not what value it
-    # contains.
+    # When we know the box does not contain a mine,
+    # but not what value it contains.
     SAFE = 'SAFE'
     # When we have no knowledge about the box contents.
     HIDDEN = 'HIDDEN'
@@ -32,7 +32,8 @@ class Board:
     HIT = 'HIT'
     
     ########################################
-    # Colors
+    # Colors. These colors were manually discovered,
+    # maybe they differ from system to system.
     HIDDEN_COLOR = (186, 189, 182)
     # When the cursor is ontop of a hidden box, the box gets highlighted and
     # changes color. This is why CURSOR_COLOR is needed.
@@ -41,7 +42,8 @@ class Board:
     HIT_COLOR = (204, 0, 0)
     # A mine was hit, and all of the mines are displayed. This is the color of
     # the box which shows an unhit mine.
-    NOTHIT_COLOR = (48, 10, 36)
+    NOTHIT_COLOR = (136, 138, 133)
+    # The color of an opened box which holds nothing.
     EMPTY_COLOR = (222, 222, 220)
     BORDER_COLOR = (242, 241, 240)
     ONE_COLOR = (221, 250, 195)
@@ -51,15 +53,16 @@ class Board:
     FIVE_COLOR = (247, 161, 162)
     SIX_COLOR = (254, 167, 133)
     SEVEN_COLOR = (255, 125, 96)
+    # Maps colors to objects which belong to the box having that color.
     COLOR_MAP = {ONE_COLOR: 1, TWO_COLOR: 2, THREE_COLOR: 3,
                  FOUR_COLOR: 4, FIVE_COLOR: 5, SIX_COLOR: 6, 
                  SEVEN_COLOR: 7, HIDDEN_COLOR: HIDDEN,
-                 EMPTY_COLOR: EMPTY, NOTHIT_COLOR: HIT}
+                 EMPTY_COLOR: EMPTY, NOTHIT_COLOR: HIT, HIT_COLOR: HIT}
 
     def __init__(self, img, topleft, nrows, ncols, N):
-        """(img) must be an image of a completly hidden board. (topleft) must be
+        """(img) must be an image of a completely hidden board. (topleft) must be
         a pixel coordinate that is within the top-left box. (nrows, ncols) are the
-        dimensions of the box. (N) is the number of mines remaining."""
+        dimensions of the board. (N) is the number of mines within the board."""
         self._matr = [[self.HIDDEN for col in range(ncols)] for row in range(nrows)]
         # (self._unknowns) contains the rowcols which are still to be
         # uncovered. This is for efficiency when we sync with an image, to query
@@ -68,17 +71,18 @@ class Board:
         self._unknowns = set(itertools.product(range(nrows), range(ncols)))
         # rowcols of boxes which contain digits
         self._digit_rowcols = set()
-        # rowcols of boxes which contain mines
+        # (self._mine_rowcols) holds a set of rowcols of boxes which are thought
+        # to contain mines, but which are not opened.
         self._mine_rowcols = set()
         self._init_boxes(img, topleft, nrows, ncols)
         self.nrows = nrows
         self.ncols = ncols
         self.N = N
-        self.hit_mine = False # Whether a mine has been hit upon
+        self.hit_mine = False # Whether a mine has been hit
 
     def _init_boxes(self, img, topleft, nrows, ncols):
         """This function creates (self._rowcol_boundary), which is a mapping from a
-        position (row, col) to a (Boundary)."""
+        position (row, col) to a (Board.Boundary)."""
         
         pix = img.load()
         
@@ -122,7 +126,7 @@ class Board:
             
     def update(self, img):
         """Updates boxes based on (img). Returns a list of the rowcols which
-        have changed."""
+        have changed, or None in case a mine has been hit."""
         self._img = img
         self._pix = img.load()
         changed = [] # the list of changed rowcols
@@ -151,9 +155,9 @@ class Board:
                 continue
             if color == self.CURSOR_COLOR:
                 # The background color of a box that has a mine that was clicked
-                # is the same as the color of a hidden box on top of which we
-                # have the cursor, which is why this color is a little tricky.
-                for xy in pixels:
+                # is the same as the color of a hidden box on top of the cursor
+                # hovers, which is why this color is a little tricky.
+                for xy in pixels: # continue from the next pixel.
                     if self._pix[xy] == self.HIT_COLOR:
                         return self.HIT
                 # The cursor was on top of a hidden box.
@@ -242,9 +246,10 @@ class Board:
 
 class Engine:
     """
-    * Public interface.
-    An Engine is used to mark mine rowcols and to make predictions which rowcols
-    do not have mines. This information is communicated via engine.run().
+    When an engine is run (via engine.run()), it marks the rowcols which it
+    thinks contain mines, and also those which it believes definitely to be free
+    of mines. After marking, it then returns the positions so marked so that the
+    controller could reflect this in the real game.
     """
 
     Group = namedtuple('Group', 'rowcols N')
@@ -255,10 +260,20 @@ class Engine:
         self.collection = None
 
     def run(self):
+        mines, safe = self._mark_as_mine_or_safe()
+        # if not (mines or safe):
+        #     # At this point the engine cannot make a definite decision, so it
+        #     # must resort to guessing
+        #     safe_rowcol_guess = self._make_safe_rowcol_guess()
+        #     mines, safe = set(), {safe_rowcol_guess}
+        #     print('Made a guess')
+        return mines, safe
+
+    def _mark_as_mine_or_safe(self):
         """Marks the rowcols which the engine knows contain mines. Returns a
         pair (marked, safe). The former is a set of the rowcols which the engine
-        marked. The latter is those it predicts do not contain mines. These can
-        be revealed safely. At that point, you can run the engine again."""
+        marked. The latter is those it believes to not contain mines. These can
+        be revealed safely."""
         mines, safe = set(), set()
         while True:
             col = self.new_collection()
@@ -273,10 +288,22 @@ class Engine:
                     self.board.mark_safe(rowcol)
                     safe.add(rowcol)
         return mines, safe
+    
+    def _make_safe_rowcol_guess(self):
+        """Makes a guess about which rowcol is safe and returns it. The guess
+        may not be correct, leading to the opening of a box which contains a
+        mine."""
+        safe_probabilities = {}
+        for group in self.collection.groups:
+            group_probability = Fraction(group.N, len(group.rowcols))
+            for rowcol in group.rowcols:
+                current_probability = safe_probabilities.get(rowcol, -1)
+                safe_probabilities[rowcol] = max(current_probability, group_probability)
+        return min(safe_probabilities.items(), key=lambda item: item[1])[0]
 
     def new_collection(self):
         """Creates a new collection based on (self.board) and stores it in
-        (self.collection). The function returns the collection for
+        (self.collection). The function also returns the collection for
         convenience."""
         pending_groups = self.pending_groups = deque()
         collection = self.collection = self.Collection(set(), set(), set())
@@ -285,6 +312,8 @@ class Engine:
         # TODO: this could be made more efficient by keeping track of the digit
         # boxes which don't have hidden neighbors.
         for digit_rowcol in self.board.digit_rowcols:
+            # use a frozenset so that the group is hashable so that we can check
+            # if it is in a set
             rowcols = frozenset(self.board.hidden_neighbors(digit_rowcol))
             if not rowcols:
                 continue
@@ -324,12 +353,13 @@ class Engine:
         the existing one in (self.collection). This may be more efficient."""
         raise NotImplementedError
 
-class Main:
+class Actuator:
     def __init__(self, engine_factory):
         self.engine_factory = engine_factory
+        # the rowcol at which the cursor is at
+        self.rowcol = None
         
     def reveal(self, rowcol):
-        print(f'Revealing {rowcol}')
         self.moveTo(rowcol)
         pyautogui.click()
         
@@ -352,9 +382,9 @@ class Main:
     def parse_args(self):
         optlist, args = getopt.getopt(sys.argv[1:], 'd:m:')
         opts = dict(optlist)
-        rows, cols = map(int, opts['-d'].split(','))
+        nrows, ncols = map(int, opts['-d'].split(','))
         mines = int(opts['-m'])
-        return rows, cols, mines
+        return nrows, ncols, mines
 
     def switch(self):
         pyautogui.keyDown('alt')
@@ -384,46 +414,50 @@ class Main:
             requests.remove(closest)
         return result
 
-    def perform(self, marked, safe):
-        pyautogui.keyDown('ctrl')
-        for rowcol in marked:
-            self.moveTo(rowcol)
-            pyautogui.click()
-        pyautogui.keyUp('ctrl')
-        for rowcol in safe:
-            if self.board.is_unknown(rowcol):
-                self.reveal(rowcol)
-                self.sync_board()
-
     def msg(self, text):
         os.system(f"notify-send '{text}'")
     
-    def main(self):
+    def run(self):
         time.sleep(2)
         rows, cols, mines = self.parse_args()
         topleft = pyautogui.position()
-        pyautogui.move((-100,-100))
+        pyautogui.move((-100,-100)) # so that the cursor is not on a box
         img = pyautogui.screenshot()
         self.board = Board(img, topleft, rows, cols, mines)
-        self.rowcol = None # the rowcol at which the cursor is at
         self.engine = self.engine_factory(self.board)
-        self.revealed = set() # for debugging
         self.reveal_random()
         
         # main loop
         while True:
             if self.board.hit_mine:
+                print('Exit Reason: A mine was hit')
                 break
-            marked, safe = self.engine.run()
-            if not (marked or safe):
-                self.msg('Engine not good enough.')
+            mines, safe = self.engine.run()
+            if not (mines or safe):
+                print('Exit Reason: Engine not good enough.')
+                self.switch()
                 break
             if self.board.N == 0:
-                self.perform(marked, self.board.unknown_rowcols)
+                self.mark_reveal(mines, self.board.unknown_rowcols)
+                print('Exit Reason: No more mines.')
                 break
             else:
-                self.perform(marked, safe)
+                self.mark_reveal(mines, safe)
+
+    def mark_reveal(self, marked, safe):
+        ########################################
+        # Mark
+        pyautogui.keyDown('ctrl')
+        for rowcol in marked:
+            self.moveTo(rowcol)
+            pyautogui.click()
+        pyautogui.keyUp('ctrl')
+        ########################################
+        # Reveal
+        for rowcol in safe:
+            self.reveal(rowcol)
+        self.sync_board()
 
 if __name__ == '__main__':
-    m = Main(Engine)
-    m.main()
+    a = Actuator(Engine)
+    a.run()
