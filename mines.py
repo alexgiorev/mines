@@ -398,22 +398,6 @@ class Actuator:
         self.reveal((random_row, random_col))
         self.sync_board()
 
-    def sort(self, mines, no_mines):
-        requests = set()
-        requests.update(('mark', rowcol) for rowcol in mines)
-        requests.update(('reveal', rowcol) for rowcol in no_mines)
-        def distance(request):
-            other_rowcol = request[1]
-            return math.sqrt(sum((a - b) ** 2 for a, b in zip(rowcol, other_rowcol)))
-        result = []
-        rowcol = self.rowcol
-        while requests:
-            closest = min(requests, key=distance)
-            result.append(closest)
-            rowcol = closest[1]
-            requests.remove(closest)
-        return result
-
     def msg(self, text):
         os.system(f"notify-send '{text}'")
     
@@ -444,11 +428,11 @@ class Actuator:
             else:
                 self.mark_reveal(mines, safe)
 
-    def mark_reveal(self, marked, safe):
+    def mark_reveal(self, mines, safe):
         ########################################
         # Mark
         pyautogui.keyDown('ctrl')
-        for rowcol in marked:
+        for rowcol in mines:
             self.moveTo(rowcol)
             pyautogui.click()
         pyautogui.keyUp('ctrl')
