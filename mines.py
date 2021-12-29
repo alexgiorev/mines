@@ -64,16 +64,6 @@ class Board:
         a pixel coordinate that is within the top-left box. (nrows, ncols) are the
         dimensions of the board. (N) is the number of mines within the board."""
         self._matr = [[self.HIDDEN for col in range(ncols)] for row in range(nrows)]
-        # (self._unknowns) contains the rowcols which are still to be
-        # uncovered. This is for efficiency when we sync with an image, to query
-        # only at coordinates of boxes whose value is still unknown. For an
-        # unknown box, the possible values are Board.HIDDEN and Board.SAFE
-        self._unknowns = set(itertools.product(range(nrows), range(ncols)))
-        # rowcols of boxes which contain digits
-        self._digit_rowcols = set()
-        # (self._mine_rowcols) holds a set of rowcols of boxes which are thought
-        # to contain mines, but which are not opened.
-        self._mine_rowcols = set()
         self._init_boxes(img, topleft, nrows, ncols)
         self.nrows = nrows
         self.ncols = ncols
@@ -130,14 +120,13 @@ class Board:
         self._img = img
         self._pix = img.load()
         changed = [] # the list of changed rowcols
-        unknowns = list(self._unknowns)
-        for rowcol in unknowns:
+        for rowcol in self.unknown_rowcols:
             value = self._value_at(rowcol)
             if value is self.HIT:
                 self.hit_mine = True
                 return None
             if value is not self.HIDDEN:
-                self.reveal(rowcol, value)
+                self[rowcol] = value
                 changed.append(rowcol)
         return changed
 
@@ -190,37 +179,36 @@ class Board:
                 if self[neigh] is Board.HIDDEN)
 
     @property
+    def rowcols(self):
+        """Returns an iterator of the rowcols available in SELF"""
+        return itertools.product(range(self.nrows), range(self.ncols))
+    
+    @property
     def hidden_rowcols(self):
-        return (rowcol for rowcol in self._unknowns
+        return (rowcol for rowcol in self.unknown_rowcols
                 if self[rowcol] is not self.SAFE)
 
     @property
     def mine_rowcols(self):
-        return iter(self._mine_rowcols)
+        for rowcol in self.rowcols:
+            if self[rowcol] is self.MINE:
+                yield rowcol
 
     @property
     def unknown_rowcols(self):
-        return iter(self._unknowns)
+        return filter(self.is_unknown, self.rowcols)
 
     @property
     def digit_rowcols(self):
-        return iter(self._digit_rowcols)
+        for rowcol in self.rowcols:
+            if type(self[rowcol]) is int:
+                yield rowcol
 
     def getxy(self, rowcol):
         """Returns a screen coordinate which is within the box at (rowcol)."""
         b = self._rowcol_boundary[rowcol]
         return random.randint(b.minx, b.maxx), random.randint(b.miny, b.maxy)
 
-    def reveal(self, rowcol, value):
-        """The box at (rowcol) is known to be empty or to contain a digit."""
-        self._check_unknown(rowcol)
-        if value is not Board.EMPTY and type(value) is not int:
-            raise ValueError(f'Bad reveal value: {value}')
-        self[rowcol] = value
-        self._unknowns.remove(rowcol)
-        if type(value) is int:
-            self._digit_rowcols.add(rowcol)
-        
     def mark_mine(self, rowcol):
         """Marks (rowcol) as a mine."""
         # TODO: do this check better
@@ -229,7 +217,6 @@ class Board:
         self._check_unknown(rowcol)
         if self.N == 0:
             raise ValueError(f'Cannot mark at {rowcol}; remaining mines count is zero.')
-        self._unknowns.remove(rowcol)
         self[rowcol] = self.MINE
         self.N -= 1
 
