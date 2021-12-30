@@ -231,12 +231,12 @@ class Board:
         if not self.is_unknown(rowcol):
             raise ValueError(f'Rowcol {rowcol} must be unknown: {self[rowcol]}.')
 
-class Engine:
+class GroupsEngine:
     """
     When an engine is run (via engine.run()), it marks the rowcols which it
     thinks contain mines, and also those which it believes definitely to be free
     of mines. After marking, it then returns the positions so marked so that the
-    controller could reflect this in the real game.
+    actuator can modify the real board.
     """
 
     Group = namedtuple('Group', 'rowcols N')
@@ -248,19 +248,13 @@ class Engine:
 
     def run(self):
         mines, safe = self._mark_as_mine_or_safe()
-        # if not (mines or safe):
-        #     # At this point the engine cannot make a definite decision, so it
-        #     # must resort to guessing
-        #     safe_rowcol_guess = self._make_safe_rowcol_guess()
-        #     mines, safe = set(), {safe_rowcol_guess}
-        #     print('Made a guess')
         return mines, safe
 
     def _mark_as_mine_or_safe(self):
-        """Marks the rowcols which the engine knows contain mines. Returns a
-        pair (marked, safe). The former is a set of the rowcols which the engine
-        marked. The latter is those it believes to not contain mines. These can
-        be revealed safely."""
+        """Marks the rowcols which the engine knows for sure contain
+        mines. Returns a pair (marked, safe). The former is a set of the rowcols
+        which the engine marked. The latter is those it believes to not contain
+        mines, these can be revealed safely."""
         mines, safe = set(), set()
         while True:
             col = self.new_collection()
@@ -335,16 +329,16 @@ class Engine:
         ########################################
         return collection
             
-    def update_collection(self, *args):
-        """TODO. Rather than creating a new collection, this function updates
-        the existing one in (self.collection). This may be more efficient."""
-        raise NotImplementedError
-
-class Actuator:
-    def __init__(self, engine_factory):
-        self.engine_factory = engine_factory
+class Agent:
+    def __init__(self, board, engine_factory):
+        self.engine = engine_factory(board)
+        self.board = board
         # the rowcol at which the cursor is at
         self.rowcol = None
+
+    #════════════════════════════════════════
+    # The following functions implement the actions the agent can take,
+    # so the group defines the "actuator"
         
     def reveal(self, rowcol):
         self.moveTo(rowcol)
@@ -366,13 +360,6 @@ class Actuator:
         rowcols which have new values."""
         return self.board.update(pyautogui.screenshot())
 
-    def parse_args(self):
-        optlist, args = getopt.getopt(sys.argv[1:], 'd:m:')
-        opts = dict(optlist)
-        nrows, ncols = map(int, opts['-d'].split(','))
-        mines = int(opts['-m'])
-        return nrows, ncols, mines
-
     def switch(self):
         pyautogui.keyDown('alt')
         pyautogui.keyDown('tab')
@@ -387,18 +374,26 @@ class Actuator:
 
     def msg(self, text):
         os.system(f"notify-send '{text}'")
-    
-    def run(self):
-        time.sleep(2)
-        rows, cols, mines = self.parse_args()
-        topleft = pyautogui.position()
-        pyautogui.move((-100,-100)) # so that the cursor is not on a box
-        img = pyautogui.screenshot()
-        self.board = Board(img, topleft, rows, cols, mines)
-        self.engine = self.engine_factory(self.board)
-        self.reveal_random()
+
+    def mark_reveal(self, mines, safe):
+        ########################################
+        # Mark
+        pyautogui.keyDown('ctrl')
+        for rowcol in mines:
+            self.moveTo(rowcol)
+            pyautogui.click()
+        pyautogui.keyUp('ctrl')
+        ########################################
+        # Reveal
+        for rowcol in safe:
+            self.reveal(rowcol)
+        self.sync_board()
+
+    #════════════════════════════════════════
+    # main function
         
-        # main loop
+    def run(self):
+        self.reveal_random()        
         while True:
             if self.board.hit_mine:
                 print('Exit Reason: A mine was hit')
@@ -415,20 +410,19 @@ class Actuator:
             else:
                 self.mark_reveal(mines, safe)
 
-    def mark_reveal(self, mines, safe):
-        ########################################
-        # Mark
-        pyautogui.keyDown('ctrl')
-        for rowcol in mines:
-            self.moveTo(rowcol)
-            pyautogui.click()
-        pyautogui.keyUp('ctrl')
-        ########################################
-        # Reveal
-        for rowcol in safe:
-            self.reveal(rowcol)
-        self.sync_board()
+def parse_args():
+    optlist, args = getopt.getopt(sys.argv[1:], 'd:m:')
+    opts = dict(optlist)
+    nrows, ncols = map(int, opts['-d'].split(','))
+    mines = int(opts['-m'])
+    return nrows, ncols, mines
 
 if __name__ == '__main__':
-    a = Actuator(Engine)
-    a.run()
+    time.sleep(2)
+    rows, cols, mines = parse_args()
+    topleft = pyautogui.position()
+    pyautogui.move((-100,-100)) # so that the cursor is not on a box
+    img = pyautogui.screenshot()
+    board = Board(img, topleft, rows, cols, mines)    
+    agent = Agent(board, GroupsEngine)
+    agent.run()
