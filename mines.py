@@ -53,6 +53,7 @@ class Board:
     FIVE_COLOR = (247, 161, 162)
     SIX_COLOR = (254, 167, 133)
     SEVEN_COLOR = (255, 125, 96)
+    MINE_FLAG_COLOR = (46, 52, 54)
     # Maps colors to objects which belong to the box having that color.
     COLOR_MAP = {ONE_COLOR: 1, TWO_COLOR: 2, THREE_COLOR: 3,
                  FOUR_COLOR: 4, FIVE_COLOR: 5, SIX_COLOR: 6, 
@@ -64,47 +65,48 @@ class Board:
         a pixel coordinate that is within the top-left box. (nrows, ncols) are the
         dimensions of the board. (N) is the number of mines within the board."""
         self._matr = [[self.HIDDEN for col in range(ncols)] for row in range(nrows)]
-        self._init_boxes(img, topleft, nrows, ncols)
+        self._set_boundaries(img, topleft, nrows, ncols)
         self.nrows = nrows
         self.ncols = ncols
         self.N = N
         self.hit_mine = False # Whether a mine has been hit
+        self.update(img)
 
-    def _init_boxes(self, img, topleft, nrows, ncols):
-        """This function creates (self._rowcol_boundary), which is a mapping from a
+    def _set_boundaries(self, img, topleft, nrows, ncols):
+        """This function creates (self._boundaries), which is a mapping from a
         position (row, col) to a (Board.Boundary)."""
-        
-        pix = img.load()
-        
-        def move_to_color(x, y, dx, dy, color):
-            while pix[x, y] != color:
+
+        pix = img.load()        
+        def move_to_border(x, y, dx, dy):
+            while pix[x, y] != Board.BORDER_COLOR:
                 x += dx; y += dy
             return x, y
-
+        def move_outside_border(x, y, dx, dy):
+            while pix[x, y] == Board.BORDER_COLOR:
+                x += dx; y += dy
+            return x, y
         ########################################
         # Form the boxes' vertical boundaries
         ybounds = []
-        x, y = move_to_color(*topleft, 0, -1, Board.BORDER_COLOR)
+        x, y = move_to_border(*topleft, 0, -1)
         for _ in range(nrows):
-            x, y = move_to_color(x, y, 0, 1, Board.HIDDEN_COLOR)
+            x, y = move_outside_border(x, y, 0, 1)
             miny = y
-            x, y = move_to_color(x, y, 0, 1, Board.BORDER_COLOR)
+            x, y = move_to_border(x, y, 0, 1)
             ybounds.append((miny, y-1))
-
         ########################################
         # Form the boxes' horizontal boundaries
         xbounds = []
-        x, y = move_to_color(*topleft, -1, 0, Board.BORDER_COLOR)
+        x, y = move_to_border(*topleft, -1, 0)
         for _ in range(ncols):
-            x, y = move_to_color(x, y, 1, 0, Board.HIDDEN_COLOR)
+            x, y = move_outside_border(x, y, 1, 0)
             minx = x
-            x, y = move_to_color(x, y, 1, 0, Board.BORDER_COLOR)
+            x, y = move_to_border(x, y, 1, 0)
             xbounds.append((minx, x-1))
-
         rowcols = itertools.product(range(nrows), range(ncols))
         boundaries = (Board.Boundary(*yb, *xb)
                       for yb, xb in itertools.product(ybounds, xbounds))
-        self._rowcol_boundary = dict(zip(rowcols, boundaries))
+        self._boundaries = dict(zip(rowcols, boundaries))
 
     def __getitem__(self, rowcol):
         row, col = rowcol
@@ -117,11 +119,10 @@ class Board:
     def update(self, img):
         """Updates boxes based on (img). Returns a list of the rowcols which
         have changed, or None in case a mine has been hit."""
-        self._img = img
-        self._pix = img.load()
+        pix = img.load()
         changed = [] # the list of changed rowcols
         for rowcol in self.unknown_rowcols:
-            value = self._value_at(rowcol)
+            value = self.value_at(pix, rowcol)
             if value is self.HIT:
                 self.hit_mine = True
                 return None
@@ -130,26 +131,39 @@ class Board:
                 changed.append(rowcol)
         return changed
 
-    def _value_at(self, rowcol):
+    def value_at(self, pix, rowcol):
         """A helper function. For the box at (rowcol), we get the value based on
-        the image (self._img). ValueError is raised if the value cannot be
-        extracted from the image. The possible return values are an int or one
-        of {Board.HIT, Board.EMPTY, Board.HIDDEN}"""
-        b = self._rowcol_boundary[rowcol]
+        the pixmap (pix), which is the return value of (IMAGE.load()). ValueError
+        is raised if the value cannot be extracted from the image. The possible
+        return values are an int or one of {Board.HIT, Board.EMPTY,
+        Board.HIDDEN}"""
+        b = self._boundaries[rowcol]
         pixels = itertools.product(range(b.minx, b.maxx+1),
                                    range(b.miny, b.maxy+1))
         for xy in pixels:
-            color = self._pix[xy]
+            color = pix[xy]
             if color == self.BORDER_COLOR:
+                # A BORDER_COLOR may appear within the boundaries of a box
+                # because the boxes' vertices are rounded.
                 continue
             if color == self.CURSOR_COLOR:
                 # The background color of a box that has a mine that was clicked
                 # is the same as the color of a hidden box on top of the cursor
                 # hovers, which is why this color is a little tricky.
                 for xy in pixels: # continue from the next pixel.
-                    if self._pix[xy] == self.HIT_COLOR:
+                    if pix[xy] == self.HIT_COLOR:
                         return self.HIT
                 # The cursor was on top of a hidden box.
+                return self.HIDDEN
+            elif color == self.HIDDEN_COLOR:
+                # The color of a hidden box is the same as the background color
+                # if a box marked as having a mine. The mine flag symbol has
+                # pixels with color (self.MINE_FLAG_COLOR) somewhere along the middle
+                # vertical line.
+                midx = (b.minx+b.maxx)//2
+                for y in range(b.miny, b.maxy):
+                    if pix[midx,y] == self.MINE_FLAG_COLOR:
+                        return self.MINE
                 return self.HIDDEN
             else:
                 value = self.COLOR_MAP.get(color)
@@ -206,7 +220,7 @@ class Board:
 
     def getxy(self, rowcol):
         """Returns a screen coordinate which is within the box at (rowcol)."""
-        b = self._rowcol_boundary[rowcol]
+        b = self._boundaries[rowcol]
         return random.randint(b.minx, b.maxx), random.randint(b.miny, b.maxy)
 
     def mark_mine(self, rowcol):
@@ -417,6 +431,27 @@ def parse_args():
     mines = int(opts['-m'])
     return nrows, ncols, mines
 
+def get_board(nrows, ncols, mines):
+    time.sleep(2)
+    topleft = pyautogui.position()
+    pyautogui.move((-100,-100)) # so that the cursor is not on a box
+    img = pyautogui.screenshot()
+    return Board(img, topleft, nrows, ncols, mines)
+
+def take_screenshot():
+    time.sleep(2)
+    return pyautogui.screenshot()
+
+def update_board(board):
+    time.sleep(2)
+    img = pyautogui.screenshot()
+    board.update(img)
+
+# some experimentation
+#════════════════════════════════════════
+
+#════════════════════════════════════════
+    
 if __name__ == '__main__':
     time.sleep(2)
     rows, cols, mines = parse_args()
