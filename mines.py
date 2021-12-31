@@ -15,7 +15,7 @@ from fractions import Fraction
 class Board:
     Boundary = namedtuple('Boundary', 'miny maxy minx maxx')
 
-    ########################################
+    #════════════════════════════════════════
     # Apart form the integers in range(1, 9), boxes can contain one of the
     # values below.
 
@@ -31,7 +31,7 @@ class Board:
     # The box contained a mine and was opened.
     HIT = 'HIT'
     
-    ########################################
+    #════════════════════════════════════════
     # Colors. These colors were manually discovered,
     # maybe they differ from system to system.
     HIDDEN_COLOR = (186, 189, 182)
@@ -85,7 +85,7 @@ class Board:
             while pix[x, y] == Board.BORDER_COLOR:
                 x += dx; y += dy
             return x, y
-        ########################################
+        #════════════════════════════════════════
         # Form the boxes' vertical boundaries
         ybounds = []
         x, y = move_to_border(*topleft, 0, -1)
@@ -94,7 +94,7 @@ class Board:
             miny = y
             x, y = move_to_border(x, y, 0, 1)
             ybounds.append((miny, y-1))
-        ########################################
+        #════════════════════════════════════════
         # Form the boxes' horizontal boundaries
         xbounds = []
         x, y = move_to_border(*topleft, -1, 0)
@@ -181,42 +181,40 @@ class Board:
                 if 0 <= rowcol[0] < self.nrows and 0 <= rowcol[1] < self.ncols)
 
     def digit_neighbors(self, rowcol):
-        return (neigh for neigh in self.neighbors(rowcol)
-                if type(self[neigh]) is int)
+        return set(neigh for neigh in self.neighbors(rowcol)
+                   if type(self[neigh]) is int)
 
     def mine_neighbors(self, rowcol):
-        return (neigh for neigh in self.neighbors(rowcol)
-                if self[neigh] is Board.MINE)
+        return set(neigh for neigh in self.neighbors(rowcol)
+                   if self[neigh] is Board.MINE)
 
     def hidden_neighbors(self, rowcol):
-        return (neigh for neigh in self.neighbors(rowcol)
-                if self[neigh] is Board.HIDDEN)
+        return set(neigh for neigh in self.neighbors(rowcol)
+                   if self[neigh] is Board.HIDDEN)
 
     @property
     def rowcols(self):
         """Returns an iterator of the rowcols available in SELF"""
-        return itertools.product(range(self.nrows), range(self.ncols))
+        return set(itertools.product(range(self.nrows), range(self.ncols)))
     
     @property
     def hidden_rowcols(self):
-        return (rowcol for rowcol in self.unknown_rowcols
-                if self[rowcol] is not self.SAFE)
+        return set(rowcol for rowcol in self.unknown_rowcols
+                   if self[rowcol] is not self.SAFE)
 
     @property
     def mine_rowcols(self):
-        for rowcol in self.rowcols:
-            if self[rowcol] is self.MINE:
-                yield rowcol
+        return set(rowcol for rowcol in self.rowcols
+                   if self[rowcol] is self.MINE)
 
     @property
     def unknown_rowcols(self):
-        return filter(self.is_unknown, self.rowcols)
+        return set(filter(self.is_unknown, self.rowcols))
 
     @property
     def digit_rowcols(self):
-        for rowcol in self.rowcols:
-            if type(self[rowcol]) is int:
-                yield rowcol
+        return set(rowcol for rowcol in self.rowcols
+                   if type(self[rowcol]) is int)
 
     def getxy(self, rowcol):
         """Returns a screen coordinate which is within the box at (rowcol)."""
@@ -244,6 +242,8 @@ class Board:
     def _check_unknown(self, rowcol):
         if not self.is_unknown(rowcol):
             raise ValueError(f'Rowcol {rowcol} must be unknown: {self[rowcol]}.')
+# Engines
+#════════════════════════════════════════
 
 class GroupsEngine:
     """
@@ -302,7 +302,7 @@ class GroupsEngine:
         convenience."""
         pending_groups = self.pending_groups = deque()
         collection = self.collection = self.Collection(set(), set(), set())
-        ########################################
+        #════════════════════════════════════════
         # Enqueue the digit boxes' main groups
         # TODO: this could be made more efficient by keeping track of the digit
         # boxes which don't have hidden neighbors.
@@ -314,14 +314,14 @@ class GroupsEngine:
                 continue
             N = self.board[digit_rowcol] - len(list(self.board.mine_neighbors(digit_rowcol)))
             self.pending_groups.append(self.Group(rowcols, N))
-        ########################################
+        #════════════════════════════════════════
         # Process pending groups
         while pending_groups:
             group = pending_groups.popleft()
             if group in collection.groups:
                 # already processed
                 continue
-            ########################################
+            #════════════════════════════════════════
             # Enqueue the complements
             for other_group in collection.groups:
                 if group.rowcols < other_group.rowcols:
@@ -333,16 +333,98 @@ class GroupsEngine:
                 rowcols = supergroup.rowcols - subgroup.rowcols
                 N = supergroup.N - subgroup.N
                 pending_groups.append(self.Group(rowcols, N))
-            ########################################
+            #════════════════════════════════════════
             # Add the current group
             collection.groups.add(group)
             if len(group.rowcols) == group.N:
                 collection.full_groups.add(group)
             elif group.N == 0:
                 collection.empty_groups.add(group)
-        ########################################
+        #════════════════════════════════════════
         return collection
-            
+
+class BruteForceEngine:
+    def __init__(self, board):
+        self.board = board
+
+    def run(self):
+        raise NotImplementedError
+
+    def _probability_distribution(self):
+        """For each hidden rowcol which is a neighbor of some digit, this
+        computes the probability that the rowcol has a mine underneath. The
+        return value is a dict which maps the rowcols to their probabilities."""
+        result = {}
+        for equiv_class in self._equiv_classes():
+            self._equiv_class_probabilities(equiv_class, result)
+        return result
+
+    def _equiv_class_probabilities(self, equiv_class, pd):
+        self._equiv_class = list(equiv_class)
+        first_rowcol = self._equiv_class[0]
+        board_copy = copy.deepcopy(self.board)
+        choices = self._choices(first_rowcol, board_copy)
+        choice = 0
+        self._stack = [(first_rowcol, board_copy, choices, choice)]
+        while self._stack:
+            if self._go_down():
+                raise NotImplementedError
+            self._backtrack()
+
+    def _go_down(self):
+        rowcol, board, choices, choice_index = self._stack[-1]
+        while True:
+            rowcol = self._equiv_class[len(self._stack)]
+            self._apply_choice(rowcol, board, choices[choice_index])
+            choices = self._choices(rowcol, board)
+            if 
+            choice_index = 0
+
+    def _apply_choice(self, rowcol, board, choice):
+        safe = set(board.hidden_neighbors(rowcol))-set(choice)
+        for rowcol in choice:
+            board.mark_mine(rowcol)
+        for rowcol in safe:
+            board[rowcol] = board.SAFE
+        
+    def _choices(self, rowcol, board):
+        hidden = board.hidden_neighbors(rowcol)
+        count = board[rowcol] - len(board.mine_neighbors(rowcol))
+        if count < 0:
+            return None
+        return list(itertools.combinations(hidden, count)
+    
+    def _graph(self):
+        # the graph will be represented as an adjacency set, which is a dict that
+        # maps each vertex (a digit rowcol) to a set of its adjacent vertices
+        graph = {}
+        for digit in self.board.digit_rowcols:
+            adj_set = graph[digit] = set()
+            for hidden in self.board.hidden_neighbors(digit):
+                adj_set.update(rowcol for rowcol in self.board.digit_neighbors(hidden)
+                                if rowcol != digit)
+        return graph
+
+    def _equiv_classes(self):
+        graph = self._graph(self.board)
+        vertices = iter(graph.keys())
+        equiv_classes = []
+        while graph:
+            root = next(iter(graph.keys()))
+            equiv_class = set()
+            equiv_classes.append(equiv_class)
+            queue = deque([root])
+            while queue:
+                vertex = queue.popleft()
+                if vertex in equiv_class:
+                    continue
+                equiv_class.add(vertex)
+                queue.extend(graph.pop(vertex))
+        return equiv_classes
+
+#════════════════════════════════════════
+# Agent
+
 class Agent:
     def __init__(self, board, engine_factory):
         self.engine = engine_factory(board)
@@ -390,14 +472,14 @@ class Agent:
         os.system(f"notify-send '{text}'")
 
     def mark_reveal(self, mines, safe):
-        ########################################
+        #════════════════════════════════════════
         # Mark
         pyautogui.keyDown('ctrl')
         for rowcol in mines:
             self.moveTo(rowcol)
             pyautogui.click()
         pyautogui.keyUp('ctrl')
-        ########################################
+        #════════════════════════════════════════
         # Reveal
         for rowcol in safe:
             self.reveal(rowcol)
@@ -446,36 +528,6 @@ def update_board(board):
     time.sleep(2)
     img = pyautogui.screenshot()
     board.update(img)
-
-# experimentation
-#════════════════════════════════════════
-def make_graph(board):
-    # the graph will be represented as an adjacency set, which is a dict that
-    # maps each vertex (a digit rowcol) to a set of its adjacent vertices
-    graph = {}
-    for digit in board.digit_rowcols:
-        adj_set = graph[digit] = set()
-        for hidden in board.hidden_neighbors(digit):
-            adj_set.update(rowcol for rowcol in board.digit_neighbors(hidden)
-                            if rowcol != digit)
-    return graph
-
-def equiv_classes(board):
-    graph = make_graph(board)
-    vertices = iter(graph.keys())
-    equiv_classes = []
-    while graph:
-        root = next(iter(graph.keys()))
-        equiv_class = set()
-        equiv_classes.append(equiv_class)
-        queue = deque([root])
-        while queue:
-            vertex = queue.popleft()
-            if vertex in equiv_class:
-                continue
-            equiv_class.add(vertex)
-            queue.extend(graph.pop(vertex))
-    return equiv_classes
 
 #════════════════════════════════════════
 
