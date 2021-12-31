@@ -447,11 +447,38 @@ def update_board(board):
     img = pyautogui.screenshot()
     board.update(img)
 
-# some experimentation
+# experimentation
 #════════════════════════════════════════
+def make_graph(board):
+    # the graph will be represented as an adjacency set, which is a dict that
+    # maps each vertex (a digit rowcol) to a set of its adjacent vertices
+    graph = {}
+    for digit in board.digit_rowcols:
+        adj_set = graph[digit] = set()
+        for hidden in board.hidden_neighbors(digit):
+            adj_set.update(rowcol for rowcol in board.digit_neighbors(hidden)
+                            if rowcol != digit)
+    return graph
+
+def equiv_classes(board):
+    graph = make_graph(board)
+    vertices = iter(graph.keys())
+    equiv_classes = []
+    while graph:
+        root = next(iter(graph.keys()))
+        equiv_class = set()
+        equiv_classes.append(equiv_class)
+        queue = deque([root])
+        while queue:
+            vertex = queue.popleft()
+            if vertex in equiv_class:
+                continue
+            equiv_class.add(vertex)
+            queue.extend(graph.pop(vertex))
+    return equiv_classes
 
 #════════════════════════════════════════
-    
+
 if __name__ == '__main__':
     time.sleep(2)
     rows, cols, mines = parse_args()
