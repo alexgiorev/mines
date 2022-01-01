@@ -68,7 +68,7 @@ class Board:
         self._set_boundaries(img, topleft, nrows, ncols)
         self.nrows = nrows
         self.ncols = ncols
-        self.N = N
+        self.total = self.remaining = N
         self.hit_mine = False # Whether a mine has been hit
         self.update(img)
 
@@ -129,6 +129,7 @@ class Board:
             if value is not self.HIDDEN:
                 self[rowcol] = value
                 changed.append(rowcol)
+        self.remaining = self.total - len(self.mine_rowcols)
         return changed
 
     def value_at(self, pix, rowcol):
@@ -227,25 +228,37 @@ class Board:
         if self[rowcol] is self.MINE:
             return
         self._check_unknown(rowcol)
-        if self.N == 0:
+        if self.remaining == 0:
             raise ValueError(f'Cannot mark at {rowcol}; remaining mines count is zero.')
         self[rowcol] = self.MINE
-        self.N -= 1
+        self.remaining -= 1
 
     def mark_safe(self, rowcol):
         self._check_unknown(rowcol)
         self[rowcol] = Board.SAFE
 
     def is_unknown(self, rowcol):
-        return (self[rowcol] is self.HIDDEN or self[rowcol] is self.SAFE)
+        value = self[rowcol]
+        return value is self.HIDDEN or value is self.SAFE
     
     def _check_unknown(self, rowcol):
         if not self.is_unknown(rowcol):
             raise ValueError(f'Rowcol {rowcol} must be unknown: {self[rowcol]}.')
+
+    @property
+    def all_hidden(self):
+        return len(self.hidden_rowcols) == self.nrows * self.ncols
+
 # Engines
 #════════════════════════════════════════
 
-class GroupsEngine:
+class Engine:
+    def run(self):
+        """Finds out which rowcols contain mines and which are safe and marks
+        them in the board accordingly. Returns a pair of sets (MINES, SAFE)"""
+        raise NotImplementedError
+
+class GroupsEngine(Engine):
     """
     When an engine is run (via engine.run()), it marks the rowcols which it
     thinks contain mines, and also those which it believes definitely to be free
@@ -343,70 +356,114 @@ class GroupsEngine:
         #════════════════════════════════════════
         return collection
 
-class BruteForceEngine:
+class BruteForceEngine(Engine):
     def __init__(self, board):
         self.board = board
 
     def run(self):
-        raise NotImplementedError
-
-    def _probability_distribution(self):
-        """For each hidden rowcol which is a neighbor of some digit, this
-        computes the probability that the rowcol has a mine underneath. The
-        return value is a dict which maps the rowcols to their probabilities."""
-        result = {}
+        mines, safe = set(), set()
+        least_probables = set()
         for equiv_class in self._equiv_classes():
-            self._equiv_class_probabilities(equiv_class, result)
-        return result
+            alternatives = self._equiv_class_alternatives(equiv_class)
+            hidden = set(itertools.chain.from_iterable(
+                self.board.hidden_neighbors(rowcol) for rowcol in equiv_class))
+            counts = {rowcol:0 for rowcol in hidden}
+            for alt in alternatives:
+                for rowcol in alt:
+                    counts[rowcol] += 1
+            in_all, in_none = set(), set()
+            least_counted, least_count = None, None
+            for rowcol, count in counts.items():
+                if least_counted is None or count < least_count:
+                    least_counted, least_count = rowcol, count
+                if count == 0:
+                    in_none.add(rowcol)
+                elif count == len(alternatives):
+                    in_all.add(rowcol)
+            least_probables.add(least_counted)
+            mines.update(in_all)
+            safe.update(in_none)
+        if not (mines or safe):
+            safe = least_probables
+        for rowcol in mines:
+            self.board.mark_mine(rowcol)
+        for rowcol in safe:
+            self.board.mark_safe(rowcol)
+        return mines, safe
 
-    def _equiv_class_probabilities(self, equiv_class, pd):
+    def _equiv_class_alternatives(self, equiv_class):
         self._equiv_class = list(equiv_class)
+        alternatives = set()
         first_rowcol = self._equiv_class[0]
         board_copy = copy.deepcopy(self.board)
         choices = self._choices(first_rowcol, board_copy)
+        if choices is None:
+            raise ValueError("No choices for first member of equivalence class")
         choice = 0
-        self._stack = [(first_rowcol, board_copy, choices, choice)]
+        self._stack = [[first_rowcol, board_copy, choices, choice]]
         while self._stack:
             if self._go_down():
-                raise NotImplementedError
+                alternative = []
+                for rowcol, board, choices, index in self._stack:
+                    alternative.extend(choices[index])
+                alternatives.add(frozenset(alternative))
             self._backtrack()
+        return alternatives
 
     def _go_down(self):
         rowcol, board, choices, choice_index = self._stack[-1]
-        while True:
-            rowcol = self._equiv_class[len(self._stack)]
+        while len(self._stack) < len(self._equiv_class):
+            board = copy.deepcopy(board)
             self._apply_choice(rowcol, board, choices[choice_index])
+            rowcol = self._equiv_class[len(self._stack)]
             choices = self._choices(rowcol, board)
-            if 
+            if choices is None:
+                return False
             choice_index = 0
+            self._stack.append([rowcol, board, choices, choice_index])
+        return True
+
+    def _backtrack(self):
+        while self._stack:
+            rowcol, board, choices, choice_index = self._stack[-1]
+            if choice_index == len(choices)-1:
+                self._stack.pop()
+            else:
+                self._stack[-1][-1] += 1
+                break
 
     def _apply_choice(self, rowcol, board, choice):
-        safe = set(board.hidden_neighbors(rowcol))-set(choice)
+        safe = board.hidden_neighbors(rowcol)-choice
         for rowcol in choice:
             board.mark_mine(rowcol)
         for rowcol in safe:
-            board[rowcol] = board.SAFE
+            board.mark_safe(rowcol)
         
     def _choices(self, rowcol, board):
         hidden = board.hidden_neighbors(rowcol)
+        if not hidden:
+            return [set()]
         count = board[rowcol] - len(board.mine_neighbors(rowcol))
-        if count < 0:
+        if count < 0 or count > len(hidden):
             return None
-        return list(itertools.combinations(hidden, count)
+        return list(map(set, itertools.combinations(hidden, count)))
     
     def _graph(self):
         # the graph will be represented as an adjacency set, which is a dict that
         # maps each vertex (a digit rowcol) to a set of its adjacent vertices
         graph = {}
         for digit in self.board.digit_rowcols:
+            hidden_neighbors = self.board.hidden_neighbors(digit)
+            if not hidden_neighbors:
+                continue
             adj_set = graph[digit] = set()
-            for hidden in self.board.hidden_neighbors(digit):
+            for hidden in hidden_neighbors:
                 adj_set.update(rowcol for rowcol in self.board.digit_neighbors(hidden)
                                 if rowcol != digit)
         return graph
 
     def _equiv_classes(self):
-        graph = self._graph(self.board)
+        graph = self._graph()
         vertices = iter(graph.keys())
         equiv_classes = []
         while graph:
@@ -422,12 +479,21 @@ class BruteForceEngine:
                 queue.extend(graph.pop(vertex))
         return equiv_classes
 
+class SequenceEngine(Engine):
+    def __init__(self, engines):
+        self.engines = engines
+    def run(self):
+        for engine in self.engines:
+            mines, safe = engine.run()
+            if mines or safe:
+                return mines, safe
+        return set(), set()
 #════════════════════════════════════════
 # Agent
 
 class Agent:
-    def __init__(self, board, engine_factory):
-        self.engine = engine_factory(board)
+    def __init__(self, board, engine):
+        self.engine = engine
         self.board = board
         # the rowcol at which the cursor is at
         self.rowcol = None
@@ -489,7 +555,8 @@ class Agent:
     # main function
         
     def run(self):
-        self.reveal_random()        
+        if self.board.all_hidden:
+            self.reveal_random()
         while True:
             if self.board.hit_mine:
                 print('Exit Reason: A mine was hit')
@@ -499,7 +566,7 @@ class Agent:
                 print('Exit Reason: Engine not good enough.')
                 self.switch()
                 break
-            if self.board.N == 0:
+            if self.board.remaining == 0:
                 self.mark_reveal(mines, self.board.unknown_rowcols)
                 print('Exit Reason: No more mines.')
                 break
@@ -531,12 +598,16 @@ def update_board(board):
 
 #════════════════════════════════════════
 
-if __name__ == '__main__':
+def main():
     time.sleep(2)
     rows, cols, mines = parse_args()
     topleft = pyautogui.position()
     pyautogui.move((-100,-100)) # so that the cursor is not on a box
     img = pyautogui.screenshot()
-    board = Board(img, topleft, rows, cols, mines)    
-    agent = Agent(board, GroupsEngine)
+    board = Board(img, topleft, rows, cols, mines)
+    engine = SequenceEngine([GroupsEngine(board), BruteForceEngine(board)])
+    agent = Agent(board, engine)
     agent.run()
+
+if __name__ == "__main__":
+    main()
