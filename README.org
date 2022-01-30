@@ -1,0 +1,1 @@
+Solving [[https://wiki.gnome.org/Apps/Mines][GNOME Mines]] automatically. You can see a demo of the program's output [[https://www.youtube.com/watch?v=Ie36ZwXWpTo][here]].

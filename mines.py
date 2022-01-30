@@ -484,6 +484,7 @@ class SequenceEngine(Engine):
         self.engines = engines
     def run(self):
         for engine in self.engines:
+            print(f"### {type(engine).__name__}")
             mines, safe = engine.run()
             if mines or safe:
                 return mines, safe
