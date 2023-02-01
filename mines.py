@@ -365,18 +365,6 @@ class BruteForceEngine(Engine):
     def __init__(self, board, risky=False):
         self.board = board
         self.risky = risky
-
-    def board_image_if(self, posib):
-        board = self.board
-        img = board.last_update_img.copy()
-        draw = ImageDraw.Draw(img)
-        for rowcol in posib["mines"]:
-            b = board.boundaries[rowcol]
-            draw.rectangle((b.minx, b.miny, b.maxx, b.maxy), (0,0,0))
-        for rowcol in posib["safe"]:
-            b = board.boundaries[rowcol]
-            draw.rectangle((b.minx, b.miny, b.maxx, b.maxy), (0,38,255))
-        img.save("board_image_if.png", "PNG")
         
     def run(self):
         mines, safe = set(), set()
@@ -474,7 +462,6 @@ class BruteForceEngine(Engine):
         result = []
         for subset in map(set, itertools.combinations(hidden, remaining)):
             result.append({"mines": subset, "safe": hidden-subset})
-        if rowcol == (8,12):
         return result
     
     def _graph(self):
@@ -512,6 +499,21 @@ class BruteForceEngine(Engine):
                 queue.extend(graph.pop(vertex))
         return equiv_classes
 
+    def board_image_if(self, posib):
+        # [2023-02-01 Wed] Was useful for debugging purposes on, I'll keep just
+        # in case. I wonder if it's also going to be useful in the future, if it
+        # is, take a note.
+        board = self.board
+        img = board.last_update_img.copy()
+        draw = ImageDraw.Draw(img)
+        for rowcol in posib["mines"]:
+            b = board.boundaries[rowcol]
+            draw.rectangle((b.minx, b.miny, b.maxx, b.maxy), (0,0,0))
+        for rowcol in posib["safe"]:
+            b = board.boundaries[rowcol]
+            draw.rectangle((b.minx, b.miny, b.maxx, b.maxy), (0,38,255))
+        img.save("board_image_if.png", "PNG")
+    
 class SequenceEngine(Engine):
     def __init__(self, engines):
         self.engines = engines
@@ -577,7 +579,6 @@ class Agent:
         for rowcol in safe:
             self.reveal(rowcol)
         self.sync_board()
-
         
     def play_full(self):
         if self.board.all_hidden:
