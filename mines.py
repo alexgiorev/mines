@@ -238,6 +238,13 @@ class Board:
         self._check_unknown(rowcol)
         self[rowcol] = Board.SAFE
 
+    def unmark(self, rowcol):
+        if self[rowcol] is self.MINE:
+            self[rowcol] = self.HIDDEN
+            self.remaining += 1
+        elif self[rowcol] is self.SAFE:
+            self[rowcol] = self.HIDDEN
+
     def is_unknown(self, rowcol):
         value = self[rowcol]
         return value is self.HIDDEN or value is self.SAFE
@@ -474,7 +481,6 @@ class BruteForceEngine(Engine):
         # rowcols, with two nodes connected if they have a common hidden
         # neighbor. With this graph formed, the equivalence classes will be
         # represented as the connected components of the graph.
-        # ══════════════════════════════════════════════════════════════════════
         graph = self._graph()
         equiv_classes = []
         while graph:
@@ -500,8 +506,9 @@ class SequenceEngine(Engine):
             if mines or safe:
                 return mines, safe
         return set(), set()
-# ════════════════════════════════════════
+
 # Agent
+# ════════════════════════════════════════
 
 class Agent:
     def __init__(self, board, engine):
@@ -604,6 +611,7 @@ def update_board(board):
     img = pyautogui.screenshot()
     board.update(img)
 
+# main
 # ════════════════════════════════════════
 
 def main():
