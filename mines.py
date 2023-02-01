@@ -225,7 +225,6 @@ class Board:
 
     def mark_mine(self, rowcol):
         """Marks (rowcol) as a mine."""
-        # TODO: do this check better
         if self[rowcol] is self.MINE:
             return
         self._check_unknown(rowcol)
@@ -240,10 +239,8 @@ class Board:
 
     def unmark(self, rowcol):
         if self[rowcol] is self.MINE:
-            self[rowcol] = self.HIDDEN
             self.remaining += 1
-        elif self[rowcol] is self.SAFE:
-            self[rowcol] = self.HIDDEN
+        self[rowcol] = self.HIDDEN
 
     def is_unknown(self, rowcol):
         value = self[rowcol]
@@ -369,29 +366,44 @@ class BruteForceEngine(Engine):
         self.board = board
         self.risky = risky
 
+    def board_image_if(self, posib):
+        board = self.board
+        img = board.last_update_img.copy()
+        draw = ImageDraw.Draw(img)
+        for rowcol in posib["mines"]:
+            b = board.boundaries[rowcol]
+            draw.rectangle((b.minx, b.miny, b.maxx, b.maxy), (0,0,0))
+        for rowcol in posib["safe"]:
+            b = board.boundaries[rowcol]
+            draw.rectangle((b.minx, b.miny, b.maxx, b.maxy), (0,38,255))
+        img.save("board_image_if.png", "PNG")
+        
     def run(self):
         mines, safe = set(), set()
         least_probables = set()
         for equiv_class in self._equiv_classes():
-            alternatives = self._equiv_class_alternatives(equiv_class)
-            hidden = set(itertools.chain.from_iterable(
+            possibilities = self._equiv_class_possibilities(equiv_class)
+            all_hidden = set(itertools.chain.from_iterable(
                 self.board.hidden_neighbors(rowcol) for rowcol in equiv_class))
-            counts = {rowcol:0 for rowcol in hidden}
-            for alt in alternatives:
-                for rowcol in alt:
-                    counts[rowcol] += 1
-            in_all, in_none = set(), set()
+            mine_counts = {rowcol:0 for rowcol in all_hidden}
+            for posib in possibilities:
+                for rowcol in posib["mines"]:
+                    mine_counts[rowcol] += 1
+                if (7,11) in posib["safe"]:
+                    self.board_image_if(posib)
+                    exit()
+            mine_in_all, safe_in_all = set(), set()
             least_counted, least_count = None, None
-            for rowcol, count in counts.items():
-                if least_counted is None or count < least_count:
-                    least_counted, least_count = rowcol, count
-                if count == 0:
-                    in_none.add(rowcol)
-                elif count == len(alternatives):
-                    in_all.add(rowcol)
+            for rowcol, mine_count in mine_counts.items():
+                if least_counted is None or mine_count < least_count:
+                    least_counted, least_count = rowcol, mine_count
+                if mine_count == 0:
+                    safe_in_all.add(rowcol)
+                elif mine_count == len(possibilities):
+                    mine_in_all.add(rowcol)
             least_probables.add(least_counted)
-            mines.update(in_all)
-            safe.update(in_none)
+            mines.update(mine_in_all)
+            safe.update(safe_in_all)
         if self.risky and not (mines or safe):
             safe = least_probables
         for rowcol in mines:
@@ -400,66 +412,70 @@ class BruteForceEngine(Engine):
             self.board.mark_safe(rowcol)
         return mines, safe
 
-    def _equiv_class_alternatives(self, equiv_class):
+    def _equiv_class_possibilities(self, equiv_class):
         self._equiv_class = list(equiv_class)
-        alternatives = set()
-        first_rowcol = self._equiv_class[0]
-        board_copy = copy.deepcopy(self.board)
-        choices = self._dbox_choices(first_rowcol, board_copy)
+        possibilities = []
+        choices = self._dbox_choices(self._equiv_class[0])
         if choices is None:
             raise ValueError("No choices for first member of equivalence class")
-        self._stack = [[first_rowcol, board_copy, choices, 0]]
+        self._stack = [[choices, 0]]
         while self._stack:
             if self._go_down():
-                alternative = []
-                for rowcol, board, choices, index in self._stack:
-                    alternative.extend(choices[index])
-                alternatives.add(frozenset(alternative))
+                possibility = {"mines": set(), "safe": set()}
+                for choices, index in self._stack:
+                    choice = choices[index]
+                    possibility["mines"].update(choice["mines"])
+                    possibility["safe"].update(choice["safe"])
+                possibilities.append(possibility)
             self._backtrack()
-        return alternatives
+        return possibilities
 
     def _go_down(self):
-        rowcol, board, choices, choice_index = self._stack[-1]
+        choices, choice_index = self._stack[-1]
         while len(self._stack) < len(self._equiv_class):
-            board = copy.deepcopy(board)
-            self._apply_choice(rowcol, board, choices[choice_index])
+            self._apply_choice(choices[choice_index])
             rowcol = self._equiv_class[len(self._stack)]
-            choices = self._dbox_choices(rowcol, board)
-            if choices is None:
-                return False
+            choices = self._dbox_choices(rowcol)
             choice_index = 0
-            self._stack.append([rowcol, board, choices, choice_index])
+            if choices is None: return False
+            self._stack.append([choices, choice_index])
         return True
 
     def _backtrack(self):
         while self._stack:
-            rowcol, board, choices, choice_index = self._stack[-1]
+            choices, choice_index = self._stack[-1]
+            self._undo_choice(choices[choice_index])
             if choice_index == len(choices)-1:
                 self._stack.pop()
             else:
-                self._stack[-1][-1] += 1
+                self._stack[-1][1] += 1
                 break
 
-    def _apply_choice(self, rowcol, board, choice):
-        safe = board.hidden_neighbors(rowcol)-choice
-        for rowcol in choice:
-            board.mark_mine(rowcol)
-        for rowcol in safe:
-            board.mark_safe(rowcol)
+    def _apply_choice(self, choice):
+        for rowcol in choice["mines"]:
+            self.board.mark_mine(rowcol)
+        for rowcol in choice["safe"]:
+            self.board.mark_safe(rowcol)
+
+    def _undo_choice(self, choice):
+        for rowcol in choice["mines"]:
+            self.board.unmark(rowcol)
+        for rowcol in choice["safe"]:
+            self.board.unmark(rowcol)
         
-    def _dbox_choices(self, rowcol, board):
-        # Here (rowcol) is the location of a D-box in (board). This is going to
-        # return a list of sets of rowcols, each set representing a possible
-        # distribution of mines among the hidden neighbors of the D-box at
-        # (rowcol). It is going to return None when there is no possible
-        # distribution.
+    def _dbox_choices(self, rowcol):
+        board = self.board
         hidden = board.hidden_neighbors(rowcol)
-        if not hidden:
-            return [set()]
-        count = board[rowcol] - len(board.mine_neighbors(rowcol))
-        if count < 0 or count > len(hidden) or count > board.remaining:
+        remaining = board[rowcol] - len(board.mine_neighbors(rowcol))
+        if remaining < 0 or remaining > len(hidden) or remaining > board.remaining:
             return None
-        return list(map(set, itertools.combinations(hidden, count)))
+        if not hidden:
+            return [{"mines": set(), "safe": set()}]        
+        result = []
+        for subset in map(set, itertools.combinations(hidden, remaining)):
+            result.append({"mines": subset, "safe": hidden-subset})
+        if rowcol == (8,12):
+        return result
     
     def _graph(self):
         # The graph will be represented as an adjacency set — it will be a dict
@@ -654,6 +670,6 @@ def main():
     elif command == "single_batch":
         agent = Agent(board, engine)
         agent.single_batch()
-
+        
 if __name__ == "__main__":
     main()
