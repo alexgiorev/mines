@@ -8,14 +8,14 @@ import getopt
 import time
 import os
 
-from PIL import Image
+from PIL import Image, ImageDraw
 from collections import namedtuple, deque, defaultdict
 from fractions import Fraction
 
 class Board:
     Boundary = namedtuple('Boundary', 'miny maxy minx maxx')
 
-    #════════════════════════════════════════
+    # ════════════════════════════════════════
     # Apart form the integers in range(1, 9), boxes can contain one of the
     # values below.
 
@@ -31,7 +31,7 @@ class Board:
     # The box contained a mine and was opened.
     HIT = 'HIT'
     
-    #════════════════════════════════════════
+    # ════════════════════════════════════════
     # Colors. These colors were manually discovered,
     # maybe they differ from system to system.
     HIDDEN_COLOR = (186, 189, 182)
@@ -73,7 +73,7 @@ class Board:
         self.update(img)
 
     def _set_boundaries(self, img, topleft, nrows, ncols):
-        """This function creates (self._boundaries), which is a mapping from a
+        """This function creates (self.boundaries), which is a mapping from a
         position (row, col) to a (Board.Boundary)."""
 
         pix = img.load()        
@@ -85,7 +85,7 @@ class Board:
             while pix[x, y] == Board.BORDER_COLOR:
                 x += dx; y += dy
             return x, y
-        #════════════════════════════════════════
+        # ════════════════════════════════════════
         # Form the boxes' vertical boundaries
         ybounds = []
         x, y = move_to_border(*topleft, 0, -1)
@@ -94,7 +94,7 @@ class Board:
             miny = y
             x, y = move_to_border(x, y, 0, 1)
             ybounds.append((miny, y-1))
-        #════════════════════════════════════════
+        # ════════════════════════════════════════
         # Form the boxes' horizontal boundaries
         xbounds = []
         x, y = move_to_border(*topleft, -1, 0)
@@ -106,7 +106,7 @@ class Board:
         rowcols = itertools.product(range(nrows), range(ncols))
         boundaries = (Board.Boundary(*yb, *xb)
                       for yb, xb in itertools.product(ybounds, xbounds))
-        self._boundaries = dict(zip(rowcols, boundaries))
+        self.boundaries = dict(zip(rowcols, boundaries))
 
     def __getitem__(self, rowcol):
         row, col = rowcol
@@ -119,6 +119,7 @@ class Board:
     def update(self, img):
         """Updates boxes based on (img). Returns a list of the rowcols which
         have changed, or None in case a mine has been hit."""
+        self.last_update_img = img
         pix = img.load()
         changed = [] # the list of changed rowcols
         for rowcol in self.unknown_rowcols:
@@ -138,7 +139,7 @@ class Board:
         is raised if the value cannot be extracted from the image. The possible
         return values are an int or one of {Board.HIT, Board.EMPTY,
         Board.HIDDEN}"""
-        b = self._boundaries[rowcol]
+        b = self.boundaries[rowcol]
         pixels = itertools.product(range(b.minx, b.maxx+1),
                                    range(b.miny, b.maxy+1))
         for xy in pixels:
@@ -219,7 +220,7 @@ class Board:
 
     def getxy(self, rowcol):
         """Returns a screen coordinate which is within the box at (rowcol)."""
-        b = self._boundaries[rowcol]
+        b = self.boundaries[rowcol]
         return random.randint(b.minx, b.maxx), random.randint(b.miny, b.maxy)
 
     def mark_mine(self, rowcol):
@@ -250,7 +251,7 @@ class Board:
         return len(self.hidden_rowcols) == self.nrows * self.ncols
 
 # Engines
-#════════════════════════════════════════
+# ════════════════════════════════════════
 
 class Engine:
     def run(self):
@@ -315,7 +316,7 @@ class GroupsEngine(Engine):
         convenience."""
         pending_groups = self.pending_groups = deque()
         collection = self.collection = self.Collection(set(), set(), set())
-        #════════════════════════════════════════
+        # ════════════════════════════════════════
         # Enqueue the digit boxes' main groups
         # TODO: this could be made more efficient by keeping track of the digit
         # boxes which don't have hidden neighbors.
@@ -327,14 +328,14 @@ class GroupsEngine(Engine):
                 continue
             N = self.board[digit_rowcol] - len(list(self.board.mine_neighbors(digit_rowcol)))
             self.pending_groups.append(self.Group(rowcols, N))
-        #════════════════════════════════════════
+        # ════════════════════════════════════════
         # Process pending groups
         while pending_groups:
             group = pending_groups.popleft()
             if group in collection.groups:
                 # already processed
                 continue
-            #════════════════════════════════════════
+            # ════════════════════════════════════════
             # Enqueue the complements
             for other_group in collection.groups:
                 if group.rowcols < other_group.rowcols:
@@ -346,19 +347,20 @@ class GroupsEngine(Engine):
                 rowcols = supergroup.rowcols - subgroup.rowcols
                 N = supergroup.N - subgroup.N
                 pending_groups.append(self.Group(rowcols, N))
-            #════════════════════════════════════════
+            # ════════════════════════════════════════
             # Add the current group
             collection.groups.add(group)
             if len(group.rowcols) == group.N:
                 collection.full_groups.add(group)
             elif group.N == 0:
                 collection.empty_groups.add(group)
-        #════════════════════════════════════════
+        # ════════════════════════════════════════
         return collection
 
 class BruteForceEngine(Engine):
-    def __init__(self, board):
+    def __init__(self, board, risky=False):
         self.board = board
+        self.risky = risky
 
     def run(self):
         mines, safe = set(), set()
@@ -383,7 +385,7 @@ class BruteForceEngine(Engine):
             least_probables.add(least_counted)
             mines.update(in_all)
             safe.update(in_none)
-        if not (mines or safe):
+        if self.risky and not (mines or safe):
             safe = least_probables
         for rowcol in mines:
             self.board.mark_mine(rowcol)
@@ -396,11 +398,10 @@ class BruteForceEngine(Engine):
         alternatives = set()
         first_rowcol = self._equiv_class[0]
         board_copy = copy.deepcopy(self.board)
-        choices = self._choices(first_rowcol, board_copy)
+        choices = self._dbox_choices(first_rowcol, board_copy)
         if choices is None:
             raise ValueError("No choices for first member of equivalence class")
-        choice = 0
-        self._stack = [[first_rowcol, board_copy, choices, choice]]
+        self._stack = [[first_rowcol, board_copy, choices, 0]]
         while self._stack:
             if self._go_down():
                 alternative = []
@@ -416,7 +417,7 @@ class BruteForceEngine(Engine):
             board = copy.deepcopy(board)
             self._apply_choice(rowcol, board, choices[choice_index])
             rowcol = self._equiv_class[len(self._stack)]
-            choices = self._choices(rowcol, board)
+            choices = self._dbox_choices(rowcol, board)
             if choices is None:
                 return False
             choice_index = 0
@@ -439,18 +440,24 @@ class BruteForceEngine(Engine):
         for rowcol in safe:
             board.mark_safe(rowcol)
         
-    def _choices(self, rowcol, board):
+    def _dbox_choices(self, rowcol, board):
+        # Here (rowcol) is the location of a D-box in (board). This is going to
+        # return a list of sets of rowcols, each set representing a possible
+        # distribution of mines among the hidden neighbors of the D-box at
+        # (rowcol). It is going to return None when there is no possible
+        # distribution.
         hidden = board.hidden_neighbors(rowcol)
         if not hidden:
             return [set()]
         count = board[rowcol] - len(board.mine_neighbors(rowcol))
-        if count < 0 or count > len(hidden):
+        if count < 0 or count > len(hidden) or count > board.remaining:
             return None
         return list(map(set, itertools.combinations(hidden, count)))
     
     def _graph(self):
-        # the graph will be represented as an adjacency set, which is a dict that
-        # maps each vertex (a digit rowcol) to a set of its adjacent vertices
+        # The graph will be represented as an adjacency set — it will be a dict
+        # which maps a node (representing a D-box) to the set of D-boxes with
+        # which it has a common hidden neighbor.
         graph = {}
         for digit in self.board.digit_rowcols:
             hidden_neighbors = self.board.hidden_neighbors(digit)
@@ -463,8 +470,12 @@ class BruteForceEngine(Engine):
         return graph
 
     def _equiv_classes(self):
+        # The idea is that we form the undirected graph whose nodes are D-box
+        # rowcols, with two nodes connected if they have a common hidden
+        # neighbor. With this graph formed, the equivalence classes will be
+        # represented as the connected components of the graph.
+        # ══════════════════════════════════════════════════════════════════════
         graph = self._graph()
-        vertices = iter(graph.keys())
         equiv_classes = []
         while graph:
             root = next(iter(graph.keys()))
@@ -484,12 +495,12 @@ class SequenceEngine(Engine):
         self.engines = engines
     def run(self):
         for engine in self.engines:
-            print(f"### {type(engine).__name__}")
+            print(f"[SequenceEngine] Running {type(engine).__name__}.")
             mines, safe = engine.run()
             if mines or safe:
                 return mines, safe
         return set(), set()
-#════════════════════════════════════════
+# ════════════════════════════════════════
 # Agent
 
 class Agent:
@@ -499,10 +510,6 @@ class Agent:
         # the rowcol at which the cursor is at
         self.rowcol = None
 
-    #════════════════════════════════════════
-    # The following functions implement the actions the agent can take,
-    # so the group defines the "actuator"
-        
     def reveal(self, rowcol):
         self.moveTo(rowcol)
         pyautogui.click()
@@ -538,48 +545,48 @@ class Agent:
     def msg(self, text):
         os.system(f"notify-send '{text}'")
 
-    def mark_reveal(self, mines, safe):
-        #════════════════════════════════════════
-        # Mark
+    def mark_and_reveal(self, mines, safe):
         pyautogui.keyDown('ctrl')
         for rowcol in mines:
             self.moveTo(rowcol)
             pyautogui.click()
         pyautogui.keyUp('ctrl')
-        #════════════════════════════════════════
-        # Reveal
         for rowcol in safe:
             self.reveal(rowcol)
         self.sync_board()
 
-    #════════════════════════════════════════
-    # main function
         
-    def run(self):
+    def play_full(self):
         if self.board.all_hidden:
             self.reveal_random()
         while True:
             if self.board.hit_mine:
-                print('Exit Reason: A mine was hit')
+                print('[Agent] Exit reason: a mine was hit')
                 break
             mines, safe = self.engine.run()
             if not (mines or safe):
-                print('Exit Reason: Engine not good enough.')
+                print('[Agent] Exit reason: engine not good enough.')
                 self.switch()
                 break
             if self.board.remaining == 0:
-                self.mark_reveal(mines, self.board.unknown_rowcols)
-                print('Exit Reason: No more mines.')
+                self.mark_and_reveal(mines, self.board.unknown_rowcols)
+                print('[Agent] Exit reason: no more mines.')
                 break
             else:
-                self.mark_reveal(mines, safe)
+                self.mark_and_reveal(mines, safe)
+
+    def single_batch(self):
+        mines, safe = self.engine.run()
+        self.mark_and_reveal(mines, safe)
 
 def parse_args():
-    optlist, args = getopt.getopt(sys.argv[1:], 'd:m:')
+    optlist, args = getopt.getopt(sys.argv[1:], 'c:e:d:m:')
     opts = dict(optlist)
     nrows, ncols = map(int, opts['-d'].split(','))
     mines = int(opts['-m'])
-    return nrows, ncols, mines
+    command = opts['-c']
+    engine = opts['-e']
+    return command, engine, nrows, ncols, mines
 
 def get_board(nrows, ncols, mines):
     time.sleep(2)
@@ -597,18 +604,48 @@ def update_board(board):
     img = pyautogui.screenshot()
     board.update(img)
 
-#════════════════════════════════════════
+# ════════════════════════════════════════
 
 def main():
+    # Creating the board
+    # ══════════════════════════════
     time.sleep(2)
-    rows, cols, mines = parse_args()
+    command, engine, rows, cols, mines = parse_args()
     topleft = pyautogui.position()
     pyautogui.move((-100,-100)) # so that the cursor is not on a box
     img = pyautogui.screenshot()
     board = Board(img, topleft, rows, cols, mines)
-    engine = SequenceEngine([GroupsEngine(board), BruteForceEngine(board)])
-    agent = Agent(board, engine)
-    agent.run()
+    # Picking the engine.
+    # ══════════════════════════════
+    if engine == "groups":
+        engine = GroupsEngine(board)
+    elif engine == "brute":
+        engine = BruteForceEngine(board)
+    elif engine == "brute_risky":
+        engine = BruteForceEngine(board, risky=True)
+    elif engine == "groups+brute":
+        engine = SequenceEngine([GroupsEngine(board), BruteForceEngine(board)])
+    elif engine == "groups+brute_risky":
+        engine = SequenceEngine([GroupsEngine(board), BruteForceEngine(board, risky=True)])
+    # Running the command.
+    # ══════════════════════════════
+    if command == "play_full":
+        agent = Agent(board, engine)
+        agent.run()
+    elif command == "show_ripe":
+        mines, safe = engine.run()
+        img = board.last_update_img
+        draw = ImageDraw.Draw(img)
+        for rowcol in mines:
+            b = board.boundaries[rowcol]
+            draw.rectangle((b.minx, b.miny, b.maxx, b.maxy), (0,0,0))
+        for rowcol in safe:
+            b = board.boundaries[rowcol]
+            draw.rectangle((b.minx, b.miny, b.maxx, b.maxy), (0,38,255))
+        img.save("show_ripe_result.png", "PNG")
+    elif command == "single_batch":
+        agent = Agent(board, engine)
+        agent.single_batch()
 
 if __name__ == "__main__":
     main()
